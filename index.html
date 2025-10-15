@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>สร้างเอกสาร Word จาก CSV (ลงชื่อเข้า-ออก)</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fc;
+        }
+        /* Style for the custom file input */
+        .custom-file-input {
+            cursor: pointer;
+            @apply block w-full text-sm text-gray-900 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 p-2.5;
+        }
+        .custom-file-input::-webkit-file-upload-button {
+            visibility: hidden;
+        }
+        .custom-file-input::before {
+            content: 'เลือกไฟล์ CSV';
+            @apply inline-flex items-center justify-center px-4 py-2 mr-4 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-lg shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500;
+        }
+        .custom-file-input:hover::before {
+            @apply bg-indigo-700;
+        }
+    </style>
+    <!-- docx library CDN for Word generation -->
+    <script src="https://cdn.jsdelivr.net/npm/docx/build/index.js"></script>
+</head>
+<body>
+    <div class="min-h-screen p-4 sm:p-8 flex flex-col items-center">
+        <div class="w-full max-w-4xl bg-white p-6 sm:p-8 rounded-xl shadow-2xl">
+            <h1 class="text-3xl font-extrabold text-gray-900 mb-2 text-center">
+                ระบบสร้างใบลงชื่อเข้า-ออก (Word)
+            </h1>
+            <p class="text-gray-600 text-center mb-6">
+                อัปโหลดไฟล์ CSV เพื่อสร้างเอกสาร Word ที่มีหัวตารางซ้ำทุกหน้า
+            </p>
+
+            <div id="loadingIndicator" class="hidden text-center p-4 rounded-lg bg-yellow-100 text-yellow-700 font-semibold mb-6">
+                กำลังดำเนินการสร้างไฟล์ Word... กรุณารอสักครู่
+            </div>
+
+            <!-- Configuration Form -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Main Title -->
+                <div>
+                    <label for="mainTitle" class="block text-sm font-medium text-gray-700 mb-1">หัวข้อใหญ่ (บรรทัดที่ 1)</label>
+                    <input type="text" id="mainTitle" value="ใบลงชื่อเข้าร่วมกิจกรรม" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="เช่น รายชื่อผู้เข้าร่วมโครงการ">
+                </div>
+
+                <!-- Time In -->
+                <div>
+                    <label for="timeIn" class="block text-sm font-medium text-gray-700 mb-1">เวลามา</label>
+                    <input type="text" id="timeIn" value="08:00" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="เช่น 08:00 น.">
+                </div>
+
+                <!-- Time Out/Return Time -->
+                <div>
+                    <label for="timeOut" class="block text-sm font-medium text-gray-700 mb-1">เวลากลับ</label>
+                    <input type="text" id="timeOut" value="16:30" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500" placeholder="เช่น 16:30 น.">
+                </div>
+
+                <!-- File Input -->
+                <div class="md:col-span-2">
+                    <label for="csvFile" class="block text-sm font-medium text-gray-700 mb-1">
+                        อัปโหลดไฟล์ CSV
+                        <span class="text-red-500 ml-2">(ต้องมีคอลัมน์: ระดับชั้น, ห้อง, คำนำหน้า, ชื่อ, นามสกุล)</span>
+                    </label>
+                    <input type="file" id="csvFile" accept=".csv" class="custom-file-input">
+                </div>
+            </div>
+
+            <!-- Output Message -->
+            <div id="outputMessage" class="mt-6 text-center text-sm font-semibold text-red-600"></div>
+
+            <!-- Generate Button -->
+            <button id="generateBtn" onclick="generateDocx()" class="mt-8 w-full md:w-auto md:float-right px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-md hover:bg-indigo-700 transition duration-150 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50" disabled>
+                สร้างไฟล์ Word (.docx)
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // Use the globally available docx library
+        const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, AlignmentType, VerticalAlign, HeightRule, WidthType, SectionType, HeadingLevel } = docx;
+
+        const mainTitleInput = document.getElementById('mainTitle');
+        const timeInInput = document.getElementById('timeIn');
+        const timeOutInput = document.getElementById('timeOut');
+        const csvFileInput = document.getElementById('csvFile');
+        const generateBtn = document.getElementById('generateBtn');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const outputMessage = document.getElementById('outputMessage');
+        let parsedData = [];
+
+        // --- Utility Functions ---
+
+        // Simple CSV parser
+        function parseCSV(csvText) {
+            // Normalize line endings and split lines
+            const lines = csvText.replace(/\r\n/g, '\n').split('\n').filter(line => line.trim() !== '');
+            if (lines.length < 2) return []; // Need header and at least one data row
+
+            const data = [];
+            // We rely on position: 0:Class, 1:Room, 2:Title, 3:FirstName, 4:LastName
+            for (let i = 1; i < lines.length; i++) {
+                // Use a simple split by comma, and remove quotes
+                const values = lines[i].split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+
+                if (values.length >= 5) {
+                    const classLevelRaw = values[0] || '';
+                    // Clean class level to get only numbers (e.g., 'ป.1' -> '1', '6/1' -> '61' but we take the first digit usually)
+                    const classLevelCleaned = (classLevelRaw.match(/\d+/) || ['99'])[0]; // Take the first number found, default to 99
+
+                    data.push({
+                        classLevel: classLevelCleaned,
+                        room: values[1] || '-',
+                        title: values[2] || '',
+                        firstName: values[3] || '',
+                        lastName: values[4] || ''
+                    });
+                }
+            }
+            // Filter out rows that have no name data and return only valid records
+            return data.filter(d => d.firstName || d.lastName);
+        }
+
+        // Handle CSV file selection and parsing
+        csvFileInput.addEventListener('change', (event) => {
+            // Disable button immediately until validation passes
+            generateBtn.disabled = true; 
+            outputMessage.textContent = '';
+            const file = event.target.files[0];
+            parsedData = [];
+
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const csvText = e.target.result;
+                        parsedData = parseCSV(csvText);
+                        
+                        // Check 1: Did we find any records?
+                        if (parsedData.length === 0) {
+                            outputMessage.textContent = 'ไม่พบข้อมูลที่ถูกต้องในไฟล์ CSV (โปรดตรวจสอบว่ามีข้อมูลและรูปแบบการเข้ารหัสเป็น UTF-8)';
+                            return;
+                        }
+
+                        // Check 2: Does at least one record have a class level for grouping?
+                        const hasValidClass = parsedData.some(d => d.classLevel && d.classLevel !== '99');
+                        if (!hasValidClass) {
+                            outputMessage.textContent = `พบ ${parsedData.length} รายการ แต่ไม่พบข้อมูล "ระดับชั้น" ที่เป็นตัวเลข (1-6) ในคอลัมน์แรก`;
+                            return;
+                        }
+
+                        // Validation Success
+                        outputMessage.textContent = `✅ อัปโหลดสำเร็จ! พบ ${parsedData.length} รายการ (พร้อมสร้างไฟล์)`;
+                        generateBtn.disabled = false; // ENABLE THE BUTTON
+
+                    } catch (error) {
+                        outputMessage.textContent = `❌ เกิดข้อผิดพลาดในการอ่านไฟล์: ${error.message}`;
+                        console.error("CSV Parsing Error:", error);
+                    }
+                };
+
+                reader.readAsText(file, 'UTF-8');
+            } else {
+                outputMessage.textContent = 'โปรดเลือกไฟล์ CSV';
+            }
+        });
+
+        // --- DOCX Generation Logic ---
+
+        function createTableCell(content, isHeader = false, width = { size: 10, type: WidthType.PERCENTAGE }) {
+            // Base style for Thsarabun New
+            const baseStyle = {
+                font: "TH Sarabun New",
+                size: 24, // 12pt
+                bold: isHeader
+            };
+
+            // Add border and alignment
+            return new TableCell({
+                children: [
+                    new Paragraph({
+                        children: [new TextRun({ text: content, ...baseStyle })],
+                        alignment: isHeader ? AlignmentType.CENTER : AlignmentType.LEFT,
+                    }),
+                ],
+                verticalAlign: VerticalAlign.CENTER,
+                width: width,
+                margins: { top: 100, bottom: 100, left: 150, right: 150 },
+                borders: {
+                    top: { style: docx.BorderStyle.SINGLE, size: 6, color: "000000" },
+                    bottom: { style: docx.BorderStyle.SINGLE, size: 6, color: "000000" },
+                    left: { style: docx.BorderStyle.SINGLE, size: 6, color: "000000" },
+                    right: { style: docx.BorderStyle.SINGLE, size: 6, color: "000000" },
+                }
+            });
+        }
+
+        function createHeaderRow(timeIn, timeOut) {
+            return new TableRow({
+                tableHeader: true, // Crucial for repeating header on every page
+                height: { value: 600, rule: HeightRule.EXACT },
+                children: [
+                    createTableCell("ห้อง", true, { size: 10, type: WidthType.PERCENTAGE }),
+                    createTableCell("คำนำหน้า", true, { size: 10, type: WidthType.PERCENTAGE }),
+                    createTableCell("ชื่อ", true, { size: 15, type: WidthType.PERCENTAGE }),
+                    createTableCell("นามสกุล", true, { size: 15, type: WidthType.PERCENTAGE }),
+                    createTableCell(`เวลามา (${timeIn})`, true, { size: 15, type: WidthType.PERCENTAGE }),
+                    createTableCell("ลงชื่อ", true, { size: 10, type: WidthType.PERCENTAGE }),
+                    createTableCell(`เวลากลับ (${timeOut})`, true, { size: 15, type: WidthType.PERCENTAGE }),
+                    createTableCell("ลงชื่อ", true, { size: 10, type: WidthType.PERCENTAGE }),
+                ],
+            });
+        }
+
+        async function generateDocx() {
+            if (parsedData.length === 0) {
+                outputMessage.textContent = 'ไม่พบข้อมูลที่ถูกต้องสำหรับสร้างไฟล์ Word โปรดอัปโหลดไฟล์ CSV อีกครั้ง';
+                generateBtn.disabled = true; // Safety check
+                return;
+            }
+
+            loadingIndicator.classList.remove('hidden');
+            outputMessage.textContent = '';
+            generateBtn.disabled = true;
+
+            const mainTitle = mainTitleInput.value || "ใบลงชื่อ";
+            const timeIn = timeInInput.value || "เวลามา";
+            const timeOut = timeOutInput.value || "เวลากลับ";
+            const filename = `${mainTitle.replace(/\s/g, '_')}_ลงชื่อ.docx`;
+
+            // Group data by classLevel (1, 2, 3, 4, 5, 6, 99=Other)
+            const groupedData = parsedData.reduce((acc, student) => {
+                const key = student.classLevel || '99';
+                if (!acc[key]) {
+                    acc[key] = [];
+                }
+                acc[key].push(student);
+                return acc;
+            }, {});
+
+            // Sort keys numerically, putting '99' (Other) last
+            const sortedKeys = Object.keys(groupedData).sort((a, b) => {
+                const numA = parseInt(a);
+                const numB = parseInt(b);
+
+                // Handle '99' explicitly as 'Other' and place it last
+                if (a === '99') return 1;
+                if (b === '99') return -1;
+
+                // Sort the rest numerically
+                return numA - numB;
+            });
+
+            const docSections = [];
+            let firstSection = true;
+
+            for (const key of sortedKeys) {
+                const classData = groupedData[key];
+                const classLabel = key === '99' ? 'ข้อมูลที่ไม่ได้ระบุระดับชั้น' : `ระดับชั้น ${key}`;
+
+                const tableRows = classData.map((student) => {
+                    return new TableRow({
+                        height: { value: 500, rule: HeightRule.AT_LEAST },
+                        children: [
+                            createTableCell(student.room, false, { size: 10, type: WidthType.PERCENTAGE }),
+                            createTableCell(student.title, false, { size: 10, type: WidthType.PERCENTAGE }),
+                            createTableCell(student.firstName, false, { size: 15, type: WidthType.PERCENTAGE }),
+                            createTableCell(student.lastName, false, { size: 15, type: WidthType.PERCENTAGE }),
+                            createTableCell('', false, { size: 15, type: WidthType.PERCENTAGE }), // Time In (Empty for signing)
+                            createTableCell('', false, { size: 10, type: WidthType.PERCENTAGE }), // Sign In (Empty for signing)
+                            createTableCell('', false, { size: 15, type: WidthType.PERCENTAGE }), // Time Out (Empty for signing)
+                            createTableCell('', false, { size: 10, type: WidthType.PERCENTAGE }), // Sign Out (Empty for signing)
+                        ],
+                    });
+                });
+
+                // Create the table structure with the repeating header
+                const headerRow = createHeaderRow(timeIn, timeOut);
+                const table = new Table({
+                    rows: [headerRow, ...tableRows],
+                    width: { size: 100, type: WidthType.PERCENTAGE },
+                });
+
+                // Define the section properties (A4 Landscape, Margins)
+                const section = {
+                    properties: {
+                        type: firstSection ? SectionType.NEXT_PAGE : SectionType.NEXT_PAGE,
+                        page: {
+                            size: {
+                                // A4 Landscape (Width=29.7cm, Height=21cm)
+                                width: docx.convertInchesToTwips(11.69),
+                                height: docx.convertInchesToTwips(8.27),
+                                orientation: docx.PageOrientation.LANDSCAPE,
+                            },
+                            margins: {
+                                // Top 3 cm (1700 Twips)
+                                top: docx.convertCmToTwips(3),
+                                // Right 2.5 cm (1417 Twips)
+                                right: docx.convertCmToTwips(2.5),
+                                // Bottom 2 cm (1134 Twips)
+                                bottom: docx.convertCmToTwips(2),
+                                // Left 2.5 cm (1417 Twips)
+                                left: docx.convertCmToTwips(2.5),
+                            },
+                        },
+                    },
+                    children: [
+                        // Main Title (User Defined)
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: mainTitle, font: "TH Sarabun New", size: 40, bold: true }), // ~20pt
+                            ],
+                            alignment: AlignmentType.CENTER,
+                        }),
+
+                        // Class Level Header (บรรทัดที่ 2)
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: classLabel, font: "TH Sarabun New", size: 36, bold: true }), // ~18pt
+                            ],
+                            alignment: AlignmentType.CENTER,
+                            spacing: { after: 300 } // Add space after this line
+                        }),
+
+                        // The Table
+                        table,
+
+                        // Add extra space at the end of the section
+                        new Paragraph({ spacing: { after: 1000 } })
+                    ],
+                };
+
+                docSections.push(section);
+                firstSection = false;
+            }
+
+            const doc = new Document({
+                sections: docSections,
+                styles: {
+                    default: {
+                        document: {
+                            run: {
+                                font: "TH Sarabun New",
+                            },
+                        },
+                    },
+                },
+            });
+
+            // Pack the document and download it
+            try {
+                const buffer = await Packer.toBlob(doc);
+                const url = URL.createObjectURL(buffer);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+
+                outputMessage.textContent = `✅ สร้างไฟล์ "${filename}" สำเร็จแล้ว!`;
+            } catch (error) {
+                outputMessage.textContent = `❌ เกิดข้อผิดพลาดในการสร้างไฟล์ Word: ${error.message}`;
+                console.error("DOCX Generation Error:", error);
+            } finally {
+                loadingIndicator.classList.add('hidden');
+                // Re-enable the button *only* if data is still available (i.e., not a generation error)
+                if (parsedData.length > 0) {
+                    generateBtn.disabled = false;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
+
